@@ -7003,6 +7003,7 @@ const POST = (function () {
   let quadScene = null, quadCam = null, quad = null;
   let matBright = null, matBlur = null, matRays = null, matComp = null;
   let W = 1, H = 1, PW = 1, PH = 1;
+  const RT_INFO = { type: '?', samples: 0 };
   let enabled = true;
   let quality = 1;          // 0=关 1=标准 2=高
 
@@ -7180,6 +7181,8 @@ const POST = (function () {
       depthTexture: depthTex,
       samples: samples,
     });
+    RT_INFO.type = (type === THREE.HalfFloatType ? 'HalfFloat' : 'UnsignedByte');
+    RT_INFO.samples = samples;
     resizeTargets(w, h);
 
     matBright = new THREE.ShaderMaterial({
@@ -7322,6 +7325,8 @@ const POST = (function () {
 
   return {
     init, setSize, render, setQuality, CFG,
+    get rtType() { return RT_INFO.type; },
+    get rtSamples() { return RT_INFO.samples; },
     get quality() { return quality; },
     get rtScene() { return rtScene; },
   };
@@ -8363,6 +8368,8 @@ const UI = (function () {
       WATER.cloudLayers.forEach(m => { m.visible = false; });
     }
 
+    if (QS.has('diag')) showDiag();
+
     btnStart.classList.remove('hidden');
     bootTip.textContent = '戴上帽子，出发吧。';
     if (SHOT.on || QS.has('auto')) {
@@ -8381,6 +8388,42 @@ const UI = (function () {
   }
 
   function grantAudioSkip() { /* headless 里没有用户手势，AUDIO.init 会自行降级 */ }
+
+  // ?diag=1 —— 把设备/WebGL 能力打到屏幕上，方便用户截图回传
+  function showDiag() {
+    let gl = null, txt = '';
+    try {
+      gl = renderer.getContext();
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : '(hidden)';
+      const vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : '(hidden)';
+      const half = gl.getExtension('EXT_color_buffer_half_float');
+      const flt = gl.getExtension('EXT_color_buffer_float');
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      txt = [
+        'WebGL        : ' + (renderer.capabilities.isWebGL2 ? '2' : '1'),
+        'GPU          : ' + gpu,
+        'Vendor       : ' + vendor,
+        'MAX_TEXTURE  : ' + gl.getParameter(gl.MAX_TEXTURE_SIZE),
+        'DPR          : ' + window.devicePixelRatio,
+        'Draw buffer  : ' + renderer.domElement.width + ' x ' + renderer.domElement.height,
+        'CSS viewport : ' + window.innerWidth + ' x ' + window.innerHeight,
+        'half_float RT: ' + (half ? 'yes' : 'no'),
+        'float RT     : ' + (flt ? 'yes' : 'no'),
+        'FBO complete : ' + (status === gl.FRAMEBUFFER_COMPLETE ? 'yes' : 'NO (' + status + ')'),
+        'RT type      : ' + (POST.rtType || '?') + ' / samples ' + (POST.rtSamples === undefined ? '?' : POST.rtSamples),
+        'Mobile path  : ' + (IS_MOBILE ? 'yes' : 'no'),
+        'UA           : ' + navigator.userAgent.slice(0, 90),
+      ].join(String.fromCharCode(10));
+    } catch (e) { txt = 'diag failed: ' + e.message; }
+    const d = document.createElement('pre');
+    d.style.cssText = 'position:fixed;left:8px;top:8px;right:8px;z-index:9999;margin:0;padding:12px;' +
+      'background:rgba(0,0,0,.92);color:#7CF;font:11px/1.55 ui-monospace,Menlo,monospace;' +
+      'white-space:pre-wrap;word-break:break-all;border:1px solid #2AF;max-height:70vh;overflow:auto;' +
+      '-webkit-user-select:text;user-select:text';
+    d.textContent = txt + String.fromCharCode(10, 10) + '(点两下全选，截图或复制发我)';
+    document.body.appendChild(d);
+  }
 
   // 无头截图序列：先手动推进若干步，再渲染一帧并回读像素
   function runShotSequence() {
