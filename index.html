@@ -7162,8 +7162,11 @@ const POST = (function () {
     W = w; H = h;
     makeQuad();
 
-    // 半浮点：泛光提亮后仍有高光余量；不支持就退回 8 位
-    const type = renderer.capabilities.isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType;
+    // ★ 移动端一律用 8 位。
+    //   HalfFloat 的帧缓冲在 iOS Safari 上是出了名的坑：FBO 可能不完整 /
+    //   渲染结果间歇性丢失，表现就是整块地面在高频闪。桌面端才用半浮点。
+    const type = (renderer.capabilities.isWebGL2 && !IS_MOBILE)
+      ? THREE.HalfFloatType : THREE.UnsignedByteType;
 
     // 移动端不开 canvas 的 antialias（场景是渲染到离屏 FBO 的，canvas 的 MSAA 根本用不上）。
     // 所以必须在这里给渲染目标开 MSAA，否则整屏零抗锯齿，边缘会持续抖。
@@ -8281,7 +8284,7 @@ const UI = (function () {
     renderer.autoClear = true;
     renderer.sortObjects = true;
     const DPR = SHOT.on ? 1 : Math.min(window.devicePixelRatio || 1, 2);
-    RENDER_SCALE = SHOT.on ? 1 : (IS_MOBILE ? 0.86 : 1.0);
+    RENDER_SCALE = SHOT.on ? 1 : (IS_MOBILE ? 0.78 : 1.0);
     renderer.setPixelRatio(DPR * RENDER_SCALE);
     renderer.setSize(window.innerWidth, window.innerHeight, false);
 
@@ -8352,6 +8355,13 @@ const UI = (function () {
     if (QS.has('nograss')) scene.traverse(o => { if (o.name === 'grass' || o.name === 'flowers') o.visible = false; });
     if (QS.has('nocloud')) WATER.cloudLayers.forEach(m => { m.visible = false; });
     if (QS.has('nofog')) TOON.S.uFogDensity.value = 0;
+    if (QS.has('lowgfx')) {
+      // 一键安全模式：不后期、不阴影、不草、不云
+      POST.setQuality(0);
+      TOON.disableShadows();
+      scene.traverse(o => { if (o.name === 'grass' || o.name === 'flowers') o.visible = false; });
+      WATER.cloudLayers.forEach(m => { m.visible = false; });
+    }
 
     btnStart.classList.remove('hidden');
     bootTip.textContent = '戴上帽子，出发吧。';
