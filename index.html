@@ -1141,7 +1141,7 @@ function toTex(cv, opts) {
   const t = new THREE.CanvasTexture(cv);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   if (opts.repeat) t.repeat.set(opts.repeat[0], opts.repeat[1]);
-  t.anisotropy = opts.aniso || 4;
+  t.anisotropy = opts.aniso || 8;
   t.minFilter = THREE.LinearMipmapLinearFilter;
   t.magFilter = THREE.LinearFilter;
   t.generateMipmaps = true;
@@ -1466,8 +1466,10 @@ const SKY = (function () {
   const VERT = `
     varying vec3 vDir;
     void main(){
-      vDir = position;                       // 球心在原点，position 即方向
+      vDir = position;                       // 球心跟着相机，position 即方向
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      // 强制贴在远平面上：这样相机 far 调小也不会把天空裁没
+      gl_Position.z = gl_Position.w;
     }`;
 
   const FRAG = `
@@ -2064,9 +2066,13 @@ const TOON = (function () {
         #endif
       #endif
       #ifdef USE_DETAIL
+        // 细节噪声只保留在近处。远处保留的话，掠射角下的高频纹理会持续
+        // 采样抖动 —— 在手机上看就是"地面一直在闪"。
+        float dNear = 1.0 - smoothstep(70.0, 420.0, vViewDepth);
         float d1 = texture2D(uDetailMap, vWorld.xz * uDetailScale.x).r;
         float d2 = texture2D(uDetailMap, vWorld.xz * uDetailScale.y + 0.37).r;
-        albedo *= (1.0 + (d1 * 0.62 + d2 * 0.38 - 0.745) * 0.62);
+        float dAmt = (d1 * 0.62 + d2 * 0.38 - 0.745) * 0.62 * dNear;
+        albedo *= (1.0 + dAmt);
       #endif
 
       // ---------- 法线贴图（用世界空间的近似切线，地表类够用）----------
@@ -2220,6 +2226,8 @@ const TOON = (function () {
   const _vp = new THREE.Matrix4();
 
   // 围绕 focus 点摆放正交光源相机
+  const _ex = new THREE.Vector3(), _ey = new THREE.Vector3(), _ez = new THREE.Vector3();
+  const _snap = new THREE.Vector3();
   function updateShadowCamera(focus, radius) {
     radius = radius || 130;
     const d = 320;
@@ -2230,10 +2238,25 @@ const TOON = (function () {
     }
     c.near = 1; c.far = d * 2.2;
     c.updateProjectionMatrix();
-    _sv.copy(SKY.sunDir).multiplyScalar(d).add(focus);
+
+    // ★ 把焦点吸附到光源空间的 texel 网格上。
+    //   不吸附的话，相机每挪一点，整张阴影贴图就整体错位半个纹素，
+    //   地面上的阴影边缘会持续"爬行"，看起来就是一直闪。
+    const texel = (2 * radius) / SHADOW_SIZE;
+    _ez.copy(SKY.sunDir).normalize();
+    _ex.set(0, 1, 0).cross(_ez);
+    if (_ex.lengthSq() < 1e-6) _ex.set(1, 0, 0); else _ex.normalize();
+    _ey.copy(_ez).cross(_ex).normalize();
+    const sx = Math.round(focus.dot(_ex) / texel) * texel;
+    const sy = Math.round(focus.dot(_ey) / texel) * texel;
+    _snap.copy(_ex).multiplyScalar(sx)
+      .addScaledVector(_ey, sy)
+      .addScaledVector(_ez, focus.dot(_ez));
+
+    _sv.copy(SKY.sunDir).multiplyScalar(d).add(_snap);
     c.position.copy(_sv);
     c.up.set(0, 1, 0);
-    c.lookAt(focus);
+    c.lookAt(_snap);
     c.updateMatrixWorld();
     _vp.multiplyMatrices(c.projectionMatrix, c.matrixWorldInverse);
     S.uShadowVP.value.multiplyMatrices(_bias, _vp);
@@ -2734,6 +2757,12 @@ const TERRAIN = (function () {
       rimPower: 4.0,
       wetness: 0.18,
     });
+    // 地形是一个巨大的贴地面，和广场/台阶几乎共面。
+    // 让地形在深度上稍微后退，贴片就能稳定压在上面（手机上尤其重要）
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = 2.0;
+    mat.polygonOffsetUnits = 2.0;
+
     mesh = new THREE.Mesh(g, mat);
     mesh.name = 'terrain';
     mesh.frustumCulled = false;
@@ -2745,10 +2774,11 @@ const TERRAIN = (function () {
   /* ==================================================== 远景山脊 ======== */
   // 安第斯那种"一层层蓝色山影"——用不受雾影响的分层剪影实现
   function buildFarRanges(scene) {
+    // 相机 far = 4200，山脊必须落在里面
     const layers = [
-      { r: 3400, n: 30, h: [2600, 3400], color: 0x6b87a8, alpha: 0.42, scale: 1.0 },
-      { r: 4900, n: 26, h: [2500, 3500], color: 0x8ba2bd, alpha: 0.30, scale: 1.0 },
-      { r: 6800, n: 22, h: [2400, 3300], color: 0xa8bcd2, alpha: 0.20, scale: 1.0 },
+      { r: 3200, n: 30, h: [2500, 3300], color: 0x6b87a8, alpha: 0.40, scale: 1.0 },
+      { r: 3700, n: 26, h: [2500, 3400], color: 0x8ba2bd, alpha: 0.28, scale: 1.0 },
+      { r: 4100, n: 22, h: [2400, 3300], color: 0xa8bcd2, alpha: 0.18, scale: 1.0 },
     ];
     const group = new THREE.Group();
     group.name = 'farRanges';
@@ -4321,6 +4351,7 @@ const INCA = (function () {
   /* --------------------------------------------------- 铺装 / 平台 ---- */
   // 一片水平的铺装地面（跟着地形起伏，但整体压在一个高度上）
   function plaza(px, py, pz, w, d, rotY, mat, seed) {
+    py += 0.26;                 // 略高于地表，避免与地形 z-fighting（原先 0.12 太薄）
     const seg = 10;
     const geoms = [];
     const rnd = makeRNG(seed || 3);
@@ -6042,7 +6073,9 @@ const PLAYER = (function () {
     if (mag > 1) { ix /= mag; iy /= mag; mag = 1; }
 
     // 屏幕坐标 → 世界方向
-    const fwdX = -Math.sin(camYaw), fwdZ = -Math.cos(camYaw);
+    // 相机的"看点"方向是 (sin(yaw), cos(yaw))。
+    // 之前写成负号，导致推摇杆向前反而后退 —— 手机上最直观的 bug
+    const fwdX = Math.sin(camYaw), fwdZ = Math.cos(camYaw);
     const rgtX = Math.cos(camYaw), rgtZ = -Math.sin(camYaw);
     let wishX = rgtX * ix + fwdX * (-iy);
     let wishZ = rgtZ * ix + fwdZ * (-iy);
@@ -6308,7 +6341,8 @@ const CAM = (function () {
     scope: false, scopeZoom: 1,
     lookSens: 0.0034,
   };
-  const cam = new THREE.PerspectiveCamera(62, 1, 0.22, 12000);
+  // near/far 比值直接决定深度精度。原来 0.22/12000（5.5 万倍）会让贴地物体疯狂闪烁
+  const cam = new THREE.PerspectiveCamera(62, 1, 0.5, 4200);
   const _tgt = new THREE.Vector3();
   const _desired = new THREE.Vector3();
 
@@ -7126,9 +7160,15 @@ const POST = (function () {
     // 半浮点：泛光提亮后仍有高光余量；不支持就退回 8 位
     const type = renderer.capabilities.isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType;
 
+    // 显式指定 24 位深度。默认的深度附件在部分移动 GPU 上是 16 位，
+    // 这种场景（大范围高度场 + 贴地广场）会直接 z-fighting，表现就是地面频闪。
+    const depthTex = renderer.capabilities.isWebGL2
+      ? new THREE.DepthTexture(W, H, THREE.UnsignedIntType)
+      : null;
     rtScene = new THREE.WebGLRenderTarget(W, H, {
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat, type: type, depthBuffer: true, stencilBuffer: false,
+      depthTexture: depthTex,
     });
     resizeTargets(w, h);
 
