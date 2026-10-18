@@ -2198,6 +2198,8 @@ const TOON = (function () {
   let SHADOW_SIZE = 2048;
   const _sv = new THREE.Vector3();
   const noShadowList = [];      // 其他模块登记的"不投影"对象
+  let shadowsEnabled = true;
+  function disableShadows(){ shadowsEnabled = false; S.uShadowOn.value = 0; }
 
   function registerNoShadow(o) { noShadowList.push(o); }
 
@@ -2266,6 +2268,7 @@ const TOON = (function () {
   const _wasVisible = [];
   function renderShadow(renderer, scene) {
     if (!shadowRT) return;
+    if (!shadowsEnabled) { S.uShadowOn.value = 0; return; }
     if (SKY.sunDir.y < 0.02) { S.uShadowOn.value = 0; return; }
     S.uShadowOn.value = 1;
 
@@ -2312,7 +2315,7 @@ const TOON = (function () {
   }
 
   return {
-    S, make, initShadow, updateShadowCamera, renderShadow, sync, registerNoShadow,
+    S, make, initShadow, updateShadowCamera, renderShadow, sync, registerNoShadow, disableShadows,
     get shadowRT() { return shadowRT; },
     get shadowCam() { return shadowCam; },
     get shadowSize() { return SHADOW_SIZE; },
@@ -6076,7 +6079,9 @@ const PLAYER = (function () {
     // 相机的"看点"方向是 (sin(yaw), cos(yaw))。
     // 之前写成负号，导致推摇杆向前反而后退 —— 手机上最直观的 bug
     const fwdX = Math.sin(camYaw), fwdZ = Math.cos(camYaw);
-    const rgtX = Math.cos(camYaw), rgtZ = -Math.sin(camYaw);
+    // 右向量 = cross(forward, up) = (-cos, 0, sin)。
+    // 之前写成 (cos, -sin) 正好是反的，所以左右颠倒、前后正常。
+    const rgtX = -Math.cos(camYaw), rgtZ = Math.sin(camYaw);
     let wishX = rgtX * ix + fwdX * (-iy);
     let wishZ = rgtZ * ix + fwdZ * (-iy);
     const wl = Math.hypot(wishX, wishZ);
@@ -7160,15 +7165,17 @@ const POST = (function () {
     // 半浮点：泛光提亮后仍有高光余量；不支持就退回 8 位
     const type = renderer.capabilities.isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType;
 
-    // 显式指定 24 位深度。默认的深度附件在部分移动 GPU 上是 16 位，
-    // 这种场景（大范围高度场 + 贴地广场）会直接 z-fighting，表现就是地面频闪。
-    const depthTex = renderer.capabilities.isWebGL2
+    // 移动端不开 canvas 的 antialias（场景是渲染到离屏 FBO 的，canvas 的 MSAA 根本用不上）。
+    // 所以必须在这里给渲染目标开 MSAA，否则整屏零抗锯齿，边缘会持续抖。
+    const samples = renderer.capabilities.isWebGL2 ? (IS_MOBILE ? 2 : 4) : 0;
+    const depthTex = (renderer.capabilities.isWebGL2 && samples === 0)
       ? new THREE.DepthTexture(W, H, THREE.UnsignedIntType)
       : null;
     rtScene = new THREE.WebGLRenderTarget(W, H, {
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat, type: type, depthBuffer: true, stencilBuffer: false,
       depthTexture: depthTex,
+      samples: samples,
     });
     resizeTargets(w, h);
 
@@ -8333,6 +8340,18 @@ const UI = (function () {
     respawnPlayer();
 
     loadSave();
+
+    /* ---- 诊断开关：用来二分定位移动端的画面问题 ----
+       ?nopost   关掉后期（泛光/体积光/调色）
+       ?noshadow 关掉阴影
+       ?nograss  关掉草和花
+       ?nocloud  关掉云海
+       ?nofog    关掉雾 */
+    if (QS.has('nopost')) POST.setQuality(0);
+    if (QS.has('noshadow')) TOON.disableShadows();
+    if (QS.has('nograss')) scene.traverse(o => { if (o.name === 'grass' || o.name === 'flowers') o.visible = false; });
+    if (QS.has('nocloud')) WATER.cloudLayers.forEach(m => { m.visible = false; });
+    if (QS.has('nofog')) TOON.S.uFogDensity.value = 0;
 
     btnStart.classList.remove('hidden');
     bootTip.textContent = '戴上帽子，出发吧。';
